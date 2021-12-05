@@ -152,11 +152,14 @@ void* tm_start(shared_t shared) {
     // TODO: tm_start(shared_t)
     struct region* reg = (struct region*) shared;
 
-    if (reg->dualMem.isAValid) {
-        //printf("Returned copy A start addr\n");
+    lock_acquire(&(reg->batcher.lock));
+    if (atomic_load(&(reg->dualMem.isAValid))) {
+        printf("Returned copy A start addr\n");
+        lock_release(&(reg->batcher.lock));
         return reg->dualMem.copyA;
     } else {
-        //printf("Returned copy B start addr\n");
+        printf("Returned copy B start addr\n");
+        lock_release(&(reg->batcher.lock));
         return reg->dualMem.copyB;
     }
 }
@@ -194,7 +197,7 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
     //mark RO
     enter(&reg->batcher);
 
-    if (true) {
+    if (print) {
         printf("Thread returned...\n");
     }
 
@@ -211,15 +214,18 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
  * @param tx     Transaction to end
  * @return Whether the whole transaction committed
 **/
-bool tm_end(shared_t shared, tx_t unused(tx)) {
+bool tm_end(shared_t shared, tx_t tx) {
     // TODO: tm_end(shared_t, tx_t)
-    if (true) {
-        printf("End the transaction...\n");
-    }
+
     struct region* reg = (struct region*) shared;
+    if (true) {
+        printf("End the transaction %lu... Before epoch %d\n", tx, get_epoch(&reg->batcher));
+    }
     if (leave(&reg->batcher, &(reg->dualMem), reg->size, reg->align)) {
-        commit(&(reg->dualMem), reg->size, reg->align);
-        lock_release(&(reg->batcher.lock));
+        commit(&(reg->dualMem), reg->size, reg->align, tx);
+        cleanup(&(reg->batcher), &(reg->dualMem), reg->size, reg->align);
+    } else {
+        commit(&(reg->dualMem), reg->size, reg->align, tx);
     }
     return true;
 }
@@ -234,14 +240,14 @@ bool tm_end(shared_t shared, tx_t unused(tx)) {
 **/
 bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
     // TODO: tm_read(shared_t, tx_t, void const*, size_t, void*)
-    if (true) {
+    if (print) {
         printf("Reading transaction..., %d\n", tx);
     }
 
     struct region* reg = (struct region*) shared;
 
     size_t offset;
-    if (reg->dualMem.isAValid) {
+    if (atomic_load(&(reg->dualMem.isAValid))) {
         offset = source - reg->dualMem.copyA;
     } else {
         offset = source - reg->dualMem.copyB;
@@ -285,24 +291,26 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
     //printf("target = %d, thread %d\n", target, thread);
 
     size_t offset;
-    if (reg->dualMem.isAValid) {
+    //printf("choose %llu > %llu, is true = %d\n", (target - reg->dualMem.copyB), (target - reg->dualMem.copyA), (unsigned)(target - reg->dualMem.copyB) > (unsigned)(target - reg->dualMem.copyA) );
+    if ((unsigned)(target - reg->dualMem.copyB) > (unsigned)(target - reg->dualMem.copyA)) {
         offset = target - reg->dualMem.copyA;
+        //printf("A is valid, offset = %lu\n", offset);
     } else {
         offset = target - reg->dualMem.copyB;
+        //printf("B is valid, offset = %lu\n", offset);
     }
-
     //printf("Alignment= %d, Size = %d\n", align, size);
 
     bool res;
 
     for (size_t i=0; i<numberOfWords;i++) {
         //printf("Index = %d\n", idx);
-        res = write_word(&reg->dualMem, i, source, offset, align, tx);
+        res = write_word(&reg->batcher, &reg->dualMem, i, source, offset, align, tx);
         if (!res) {
-            if (true) {
+            if (print) {
                 printf("Failed finishing writing a word from the transaction on thread = %d, loop = %d...\n", tx, i);
             }
-            cleanup_write(&reg->batcher,&reg->dualMem,target,source,size,i,align);
+            cleanup_write(&reg->batcher,&reg->dualMem,target,source,reg->size,i,align);
             return false;
         }
     }
@@ -319,7 +327,7 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
 **/
 alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** unused(target)) {
     // TODO: tm_alloc(shared_t, tx_t, size_t, void**)
-    if (true) {
+    if (print) {
         printf("Allocate memory for a transaction...\n");
     }
     struct region* reg = (struct region*) shared;
@@ -365,7 +373,7 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** unused(ta
  * @return Whether the whole transaction can continue
 **/
 bool tm_free(shared_t unused(shared), tx_t unused(tx), void* unused(target)) {
-    if (true) {
+    if (print) {
         printf("Free memory for a transaction...\n");
     }
     // TODO: tm_free(shared_t, tx_t, void*)

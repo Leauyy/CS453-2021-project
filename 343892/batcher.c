@@ -39,30 +39,22 @@ void enter(struct batch *self) {
         lock_release(&(self->lock));
     } else {
         //append current thread
-        
+        size_t epoch = get_epoch(self);
         //wrap mutex
 
         //TODO batcher unique condition
         //Edge case, thread enters after leave
         size_t last = atomic_fetch_add(&self->last, 1);
 
-        //warp mutex
-
-        //self->threads[last].thread = pthread_self();
-
-        pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-
-        //self->threads[last].lock = lock;
-
         if (printThreads) {
-            printf("Thread %d is entering sleep\n", last);
+            printf("Thread %d is entering sleep| EPOCH = %lu\n", last, epoch);
         }
         //lock_release(&(self->lock));
         //pthread_mutex_lock(&(self->lock.mutex));
-        pthread_cond_wait(&cond, &(self->lock.mutex));
+        pthread_cond_wait(&(self->lock.cv), &(self->lock.mutex));
         pthread_mutex_unlock(&(self->lock.mutex));
         if (printThreads) {
-            printf("Thread %d is awake\n", last);
+            printf("Thread %d is awake| FROM EPOCH = %lu\n", last, epoch);
         }
     }
 
@@ -83,20 +75,12 @@ bool leave(struct batch *self, struct dualMem* dualMem, size_t size, size_t alig
         if (printThreads) {
             printf("Waking up total threads : %d, on epoch %d \n", total, epoch);
         }
-        // unlock mutex
-        // clear blocked list
-
-        //wrap mutex
         atomic_store(&self->last,0);
-        // return true and :
 
-
-        pthread_cond_broadcast(&cond);
         if (printThreads) {
             size_t remains = atomic_load(&self->remaining);
             printf("Thread has finished an epoch \n");
         }
-        //wrap mutex
         return true;
     } else {
         size_t remains = atomic_fetch_sub(&self->remaining, 1);
@@ -109,33 +93,23 @@ bool leave(struct batch *self, struct dualMem* dualMem, size_t size, size_t alig
 
 }
 
-bool commit(struct dualMem* dualMem ,size_t size, size_t align) {
+bool commit(struct dualMem* dualMem ,size_t size, size_t align, tx_t tx) {
     if (printThreads) {
         printf("Commiting transaction...\n");
     }
+
     size_t words = size/align;
+    size_t varIdx;
 
-    if (!dualMem->isAValid) {
-        memcpy(dualMem->copyB, dualMem->copyA, size);
-    } else {
-        memcpy(dualMem->copyA, dualMem->copyB, size);
-    }
-
-    //raise(SIGTRAP);
-
-    if (memcmp(dualMem->copyA,dualMem->copyB, size)){
-        printf("Could not equal memory regions\n");
-    }
-
-    dualMem->isAValid = !dualMem->isAValid;
-
-    //reset accessed
-    //memset(dualMem->wasWritten, 0, words* sizeof(atomic_int));
-    atomic_store(&dualMem->wasWritten, 0);
-    memset(dualMem->accessed, 0, words* sizeof(atomic_size_t));
-
-    if (toPrint) {
-        printf("Finished commiting the transaction\n");
+    for (size_t i= 0; i<words; i++){
+        varIdx = i*align;
+        if (atomic_load(dualMem->accessed + i) == tx){
+            if (!atomic_load(&dualMem->isAValid)) {
+                memcpy(dualMem->copyB + varIdx, dualMem->copyA + varIdx, align);
+            } else {
+                memcpy(dualMem->copyA + varIdx, dualMem->copyB + varIdx, align);
+            }
+        }
     }
     return true;
 }
@@ -145,17 +119,19 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
     if(toPrint) {
         printf("Reading word \n");
     }
-    //size_t thread = (size_t) pthread_self();
-    size_t varIdx = + offset/align + index*sizeof(atomic_size_t);
+
+    size_t writeOffset = index*align;
+    //accesed word index
+    size_t varIdx = offset/align + index;
     bool is_ro = (transactionId % 2) == 0;
     if (is_ro){
         if(toPrint) {
             printf("Reading word| Is Read Only\n");
         }
-        if (dualMem->isAValid) {
-            memcpy(target, dualMem->copyA + offset, align);
+        if (atomic_load(&dualMem->isAValid)) {
+            memcpy(target, dualMem->copyA + writeOffset, align);
         } else {
-            memcpy(target, dualMem->copyB + offset, align);
+            memcpy(target, dualMem->copyB + writeOffset, align);
         }
         return true;
     } else {
@@ -164,9 +140,9 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
             if (atomic_load(dualMem->accessed + varIdx) == transactionId) { //in access set
                 //read
                 if (!dualMem->isAValid) {
-                    memcpy(target, dualMem->copyA + offset, align);
+                    memcpy(target, dualMem->copyA + writeOffset, align);
                 } else {
-                    memcpy(target, dualMem->copyB + offset, align);
+                    memcpy(target, dualMem->copyB + writeOffset, align);
                 }
                 return true;
             } else {
@@ -177,16 +153,16 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
             }
         } else {
             atomic_store(dualMem->accessed + varIdx, transactionId);
-            if (dualMem->isAValid) {
-                memcpy(target, dualMem->copyA + offset, align);
+            if (atomic_load(&dualMem->isAValid)) {
+                memcpy(target, dualMem->copyA + writeOffset, align);
             } else {
-                memcpy(target, dualMem->copyB + offset, align);
+                memcpy(target, dualMem->copyB + writeOffset, align);
             }
             return true;
         }
     }
 }
-bool write_word( struct dualMem* dualMem, size_t index, void const* source, size_t offset, size_t align, size_t transactionId) {
+bool write_word(struct batch* self ,struct dualMem* dualMem, size_t index, void const* source, size_t offset, size_t align, size_t transactionId) {
     if (toPrint) {
         printf("Writing word for transaction, with index %d\n", index);
     }
@@ -202,7 +178,7 @@ bool write_word( struct dualMem* dualMem, size_t index, void const* source, size
         }
         size_t tId = atomic_load(dualMem->accessed + varIdx);
         if (toPrint) {
-            printf("Transaction ID of access = %d, our ID = %lu, index = %lu\n", tId, transactionId, index+offset);
+            printf("Transaction ID of access = %lu, our ID = %lu, index = %lu\n", tId, transactionId, index+offset);
         }
         if (tId == transactionId || tId == 0) {
             if (toPrint) {
@@ -211,8 +187,10 @@ bool write_word( struct dualMem* dualMem, size_t index, void const* source, size
             if (tId == 0){
                 atomic_store(dualMem->accessed + varIdx, transactionId);
             }
-            printf("Transaction writing %lu\n", transactionId);
-            if (!dualMem->isAValid) {
+            if (toPrint) {
+                printf("Transaction writing %lu\n", transactionId);
+            }
+            if (!atomic_load(&dualMem->isAValid)) {
                 memcpy(dualMem->copyA + offset + writeOffset, source + writeOffset, align);
             } else {
                 memcpy(dualMem->copyB + offset + writeOffset, source + writeOffset, align);
@@ -221,7 +199,8 @@ bool write_word( struct dualMem* dualMem, size_t index, void const* source, size
         } else {
             //size_t tId = atomic_load(dualMem->accessed + offset + index);
             if (printAborts) {
-                printf("ABORT: Write aborted due to WORD WAS ACCESSED BY OTHER TRANSACTIOn, US = %d, THEM = %d, IDX = %llu \n", transactionId, tId, varIdx);
+                printf("ABORT: Write aborted due to WORD WAS ACCESSED BY OTHER TRANSACTIOn, US = %d, THEM = %d, IDX = %llu, EPOCH = %lu \n", transactionId, tId, varIdx,
+                       get_epoch(self));
             }
             if (varIdx == 2305843009213693943){
                 raise(SIGTRAP);
@@ -247,7 +226,7 @@ bool write_word( struct dualMem* dualMem, size_t index, void const* source, size
             if (true) {
                 printf("First to access word is transaction = %d\n", transactionId);
             }
-            if (!dualMem->isAValid) {
+            if (!atomic_load(&dualMem->isAValid)) {
                 memcpy(dualMem->copyA + offset, source + writeOffset, align);
             } else {
                 memcpy(dualMem->copyB + offset, source + writeOffset, align);
@@ -269,10 +248,16 @@ void cleanup_write(struct batch* self, struct dualMem* dualMem,void* target, con
     //
     if (leave(self,dualMem,size,align)) {
         printf("Transaction aborted cleaning up writes...\n");
-        size_t words = size / align;
-        //memset(dualMem->wasWritten, 0, words * sizeof(atomic_int));
-        atomic_store(&dualMem->wasWritten, 0);
-        memset(dualMem->accessed, 0, words * sizeof(atomic_size_t));
-        lock_release(&(self->lock));
+        cleanup(self, dualMem, size, align);
     }
+}
+
+void cleanup(struct batch* self, struct dualMem* dualMem, size_t size, size_t align){
+    printf("Cleaning up\n");
+    atomic_store(&dualMem->wasWritten, 0);
+    memset(dualMem->accessed, 0, size);
+    printf("Broadcasting awake \n");
+    pthread_cond_broadcast(&(self->lock.cv));
+    //new condition for new epoch
+    lock_release(&(self->lock));
 }

@@ -28,7 +28,7 @@ struct batch{
 };
 
 struct dualMem {
-    bool isAValid; //false = A is valid; true = B is valid;
+    atomic_int isAValid; //false = A is valid; true = B is valid;
     atomic_int wasWritten;
     //USE Linked List because too lazy to free array after each del ... :)
     struct dualMem* NEXT;
@@ -50,7 +50,7 @@ bool leave(struct batch *self, struct dualMem* dualMem, size_t size, size_t alig
 
 bool read_word(struct dualMem* dualMem, size_t index, size_t source, void* target, size_t align, size_t transactionId);
 
-bool write_word(struct dualMem* dualMem, size_t index, void const* source, size_t offset, size_t align, size_t transactionId);
+bool write_word(struct batch* self ,struct dualMem* dualMem, size_t index, void const* source, size_t offset, size_t align, size_t transactionId);
 
 bool read(struct batch *self, const void* source, size_t size, void* target);
 
@@ -60,7 +60,8 @@ shared_t alloc(struct batch *self, size_t size, void* target);
 
 //bool free(struct batch *self, void* target);
 
-bool commit(struct dualMem* dualMem, size_t size, size_t align);
+bool commit(struct dualMem* dualMem, size_t size, size_t align, tx_t tx);
 void cleanup_read(struct batch* self, struct dualMem* dualMem,void* target, const void* source, size_t size, size_t reachedIndex, size_t align);
 void cleanup_write(struct batch* self, struct dualMem* dualMem,void* target, const void* source, size_t size, size_t reachedIndex, size_t align);
+void cleanup(struct batch* self, struct dualMem* dualMem, size_t size, size_t align);
 
