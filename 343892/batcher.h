@@ -27,17 +27,18 @@ struct batch{
     struct threads* threads;
 };
 
+
 struct dualMem {
-    atomic_int isAValid; //false = A is valid; true = B is valid;
-    atomic_int wasWritten;
+
     //USE Linked List because too lazy to free array after each del ... :)
     struct dualMem* NEXT;
     struct dualMem* PREV;
     //access set
     atomic_size_t* accessed;
-    atomic_int totalAccesses;
-    void* copyA;
-    void* copyB;
+    atomic_size_t* wasWritten;
+
+    void* validCopy;
+    void* writeCopy;
 };
 
 struct batch* init(size_t threadCount);
