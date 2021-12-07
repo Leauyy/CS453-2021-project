@@ -40,9 +40,6 @@ struct region{
     atomic_size_t nextRWSlot;
 };
 
-static const tx_t read_only_tx  = UINTPTR_MAX - 10;
-static const tx_t read_write_tx = UINTPTR_MAX - 11;
-
 
 /** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
  * @param size  Size of the first shared segment of memory to allocate (in bytes), must be a positive multiple of the alignment
@@ -64,54 +61,44 @@ shared_t tm_create(size_t size, size_t align) {
     region->batcher = *init(128);
 
 
-    //    if (size%align != 0){
-    //        return abort_alloc;
-    //    }
+    size_t noWords = size/align;
+    struct dualMem* dualMem = (struct dualMem*) malloc(sizeof(struct dualMem));
+    struct word* words = malloc(sizeof(struct word)*noWords);
 
-    size_t words = size/align;
-
-    //reg.align * words
-    struct dualMem* dualMem= (struct dualMem*) malloc(sizeof(struct dualMem));
-    if (posix_memalign(&(dualMem->accessed), sizeof(atomic_size_t), size) != 0) {
-        free(region);
-        return invalid_shared;
-    }
-    if (posix_memalign(&(dualMem->wasWritten), sizeof(atomic_size_t), size) != 0) {
+    //Pointers to words structs
+    void **contMem = (void**) malloc(sizeof(void*));
+    if (posix_memalign(contMem, align, size) != 0) {
         free(region);
         return invalid_shared;
     }
 
-    printf("Accessed size = %lu || Number of words %lu, ||Size %lu \n",sizeof(atomic_size_t)*words, words, size);
 
-    memset(dualMem->accessed, 0, size);
-    memset(dualMem->wasWritten, 0, size);
 
-    //printf("Init value of accessed: %d", *(&(dualMem->accessed) + 1*sizeof(atomic_size_t)));
-
-    if (print) {
-        printf("Allocating memory region \n");
-    }
-    if (posix_memalign(&(dualMem->validCopy), align, size) != 0) {
-        free(region);
-        return invalid_shared;
-    }
-    if (posix_memalign(&(dualMem->writeCopy), align, size) != 0) {
-        free(region);
-        return invalid_shared;
+    if (true) {
+        printf("Allocating memory region| size %lu| Align %llu \n", size, align);
     }
 
-    region->start = dualMem->validCopy;
 
-    //memset(dualMem->accessed, 0, words* sizeof(atomic_int));
-    //memset(dualMem->wasWritten, 0, words* sizeof(atomic_int));
+    printf("Memory start %llu\n",contMem);
 
-    memset(dualMem->validCopy, 0, size);
-    memset(dualMem->writeCopy, 0, size);
+    size_t alignDiff = align/sizeof(void*);
 
-    //printf("Address of A: %lu || Address of B:%lu\n Size %d\n", dualMem->copyA, dualMem->copyB, size);
+    for (size_t i=0; i<noWords; i++) {
+        struct word* _word = (struct word*) (words + i*sizeof(struct word*));
+        _word->wordId = i;
+        _word->validCopy = malloc(align);
+        _word->writeCopy = malloc(align);
+        atomic_store(&_word->wasWritten, 0);
+        atomic_store(&_word->accessed, 0);
+        *(contMem + i*align) = (void*) _word;
 
-    //A is valid
-    //dualMem->isAValid = true;
+        printf("Void addr value = %llu || Void addr = %llu\n", *(contMem + i*align), contMem+i*alignDiff);
+    }
+
+    region->start = contMem;
+
+    dualMem->words = words;
+
     region->dualMem = *dualMem;
     atomic_store(&region->nextROSlot, 2);
     atomic_store(&region->nextRWSlot, 1);
@@ -122,9 +109,8 @@ shared_t tm_create(size_t size, size_t align) {
     region->allocs = dualMem;
 
     //TODO check memory alloc
-    //void* memory = (void*) ((uintptr_t)dualMem + sizeof(struct dualMem));
 
-    printf("Finished creationg mem region \n");
+    printf("Finished creating mem region \n");
     return region;
 }
 
@@ -147,7 +133,7 @@ void* tm_start(shared_t shared) {
     // TODO: tm_start(shared_t)
     struct region* reg = (struct region*) shared;
 
-    return reg->start;
+    return (void*)reg->start;
 }
 
 /** [thread-safe] Return the size (in bytes) of the first allocated segment of the shared memory region.
@@ -226,14 +212,14 @@ bool tm_end(shared_t shared, tx_t tx) {
 **/
 bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
     // TODO: tm_read(shared_t, tx_t, void const*, size_t, void*)
-    if (print) {
+    if (true) {
         printf("Reading transaction..., %d\n", tx);
     }
 
     struct region* reg = (struct region*) shared;
 
     //size_t offset;
-    size_t offset = source - reg->dualMem.validCopy;
+    size_t offset = 0;
 
     //printf("Offset = %lu \n", offset);
 
@@ -244,7 +230,9 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
 
     for (size_t i=0; i<numberOfWords; i++) {
         size_t idx = i*align;
-        res = read_word(&reg->dualMem, idx, offset,target+idx, align, tx);
+        struct word* _word = (struct word*) source;
+
+        res = read_word(_word, idx, offset,target+idx, align, tx);
         if (!res) {
             cleanup_read(&reg->batcher,&reg->dualMem,target,source,size,idx-align,align);
             printf("Failed read transaction ... \n");
@@ -265,28 +253,32 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
 **/
 bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
     // TODO: tm_write(shared_t, tx_t, void const*, size_t, void*)
-    if (print) {
+    if (true) {
         printf("Writing for the transaction..., %d\n", tx);
     }
+
     struct region* reg = (struct region*) shared;
     size_t align = reg->align;
     size_t numberOfWords = size/align;
-    size_t thread = (size_t) pthread_self();
-    //printf("target = %d, thread %d\n", target, thread);
 
     size_t offset;
-    //printf("choose %llu > %llu, is true = %d\n", (target - reg->dualMem.copyB), (target - reg->dualMem.copyA), (unsigned)(target - reg->dualMem.copyB) > (unsigned)(target - reg->dualMem.copyA) );
-    offset = target - reg->dualMem.validCopy;
-    if (offset>reg->size) {
-        printf("Target addr %llu, Valid addr %llu", target, reg->dualMem.validCopy);
-    }
-    //printf("Alignment= %d, Size = %d\n", align, size);
-    //printf("Offset = %lu \n", offset);
+    offset = target - reg->start;
+
+    printf("Target addr %llu\n", target);
+
+    struct word _word = *(struct word*) (target+24);
+    printf("Word access = %llu\n || Word ID = %llu \n", atomic_load(&(_word.accessed)), _word.wordId);
+    raise(SIGTRAP);
+    void* addr;
+
+
     bool res;
 
     for (size_t i=0; i < numberOfWords; i++) {
         //printf("Index = %d\n", idx);
-        res = write_word(&reg->batcher, &reg->dualMem, i, source, offset, align, tx);
+        //struct word* _word = (struct word*) target;
+        //printf("Word access = %llu\n || Word ID = %llu \n", atomic_load(&(_word.accessed)), _word.wordId);
+        res = write_word(&reg->batcher, &_word, i, source, offset, align, tx);
         if (!res) {
             if (print) {
                 printf("Failed finishing writing a word from the transaction on thread = %d, loop = %d...\n", tx, i);
@@ -313,37 +305,37 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** unused(ta
     }
     struct region* reg = (struct region*) shared;
 
-    size_t align = reg->align;
-
-    if (size%align != 0){
-        return abort_alloc;
-    }
-
-    size_t words = size/align;
-
-    //reg.align * words
-    struct dualMem* dualMem= (struct dualMem*) malloc(sizeof(struct dualMem));
-    dualMem->wasWritten = (atomic_size_t*) malloc(size);
-    dualMem->accessed = (atomic_size_t *) malloc(size);
-    dualMem->validCopy = (void*) malloc(size);
-    dualMem->writeCopy = (void*) malloc(size);
-
-    memset(dualMem->accessed, 0, size);
-    memset(dualMem->wasWritten, 0, size);
-    memset(dualMem->validCopy, 0, size);
-    memset(dualMem->writeCopy, 0, size);
-
-    reg->dualMem = *dualMem;
-
-    //
-    dualMem->PREV = NULL;
-    dualMem->NEXT = reg->allocs;
-    if (dualMem->NEXT) dualMem->NEXT->PREV = dualMem;
-    reg->allocs = dualMem;
-
-    //TODO check memory alloc
-    void* memory = (void*) ((uintptr_t)dualMem + sizeof(struct dualMem));
-    *target = memory;
+//    size_t align = reg->align;
+//
+//    if (size%align != 0){
+//        return abort_alloc;
+//    }
+//
+//    size_t words = size/align;
+//
+//    //reg.align * words
+//    struct dualMem* dualMem= (struct dualMem*) malloc(sizeof(struct dualMem));
+//    dualMem->wasWritten = (atomic_size_t*) malloc(size);
+//    dualMem->accessed = (atomic_size_t *) malloc(size);
+//    dualMem->validCopy = (void*) malloc(size);
+//    dualMem->writeCopy = (void*) malloc(size);
+//
+//    memset(dualMem->accessed, 0, size);
+//    memset(dualMem->wasWritten, 0, size);
+//    memset(dualMem->validCopy, 0, size);
+//    memset(dualMem->writeCopy, 0, size);
+//
+//    reg->dualMem = *dualMem;
+//
+//    //
+//    dualMem->PREV = NULL;
+//    dualMem->NEXT = reg->allocs;
+//    if (dualMem->NEXT) dualMem->NEXT->PREV = dualMem;
+//    reg->allocs = dualMem;
+//
+//    //TODO check memory alloc
+//    void* memory = (void*) ((uintptr_t)dualMem + sizeof(struct dualMem));
+//    *target = memory;
     return success_alloc;
 }
 
@@ -358,16 +350,16 @@ bool tm_free(shared_t unused(shared), tx_t unused(tx), void* unused(target)) {
         printf("Free memory for a transaction...\n");
     }
     // TODO: tm_free(shared_t, tx_t, void*)
-    struct dualMem* dualMem = (struct dualMem*) ((uintptr_t) dualMem - sizeof(struct dualMem));
-
-    // Remove from the linked list
-    if (dualMem->PREV) dualMem->PREV->NEXT = dualMem->NEXT;
-    else ((struct region*) shared)->allocs = dualMem->NEXT;
-    if (dualMem->NEXT) dualMem->NEXT->PREV = dualMem->PREV;
-
-    free(dualMem->validCopy);
-    free(dualMem->writeCopy);
-    free(dualMem->accessed);
-    free(dualMem);
+//    struct dualMem* dualMem = (struct dualMem*) ((uintptr_t) dualMem - sizeof(struct dualMem));
+//
+//    // Remove from the linked list
+//    if (dualMem->PREV) dualMem->PREV->NEXT = dualMem->NEXT;
+//    else ((struct region*) shared)->allocs = dualMem->NEXT;
+//    if (dualMem->NEXT) dualMem->NEXT->PREV = dualMem->PREV;
+//
+//    free(dualMem->validCopy);
+//    free(dualMem->writeCopy);
+//    free(dualMem->accessed);
+//    free(dualMem);
     return true;
 }

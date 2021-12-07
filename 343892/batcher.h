@@ -27,18 +27,21 @@ struct batch{
     struct threads* threads;
 };
 
+struct word {
+    size_t wordId;
+    atomic_size_t accessed;
+    atomic_size_t wasWritten;
+
+    void* validCopy;
+    void* writeCopy;
+};
 
 struct dualMem {
-
     //USE Linked List because too lazy to free array after each del ... :)
     struct dualMem* NEXT;
     struct dualMem* PREV;
     //access set
-    atomic_size_t* accessed;
-    atomic_size_t* wasWritten;
-
-    void* validCopy;
-    void* writeCopy;
+    struct word* words;
 };
 
 struct batch* init(size_t threadCount);
@@ -49,9 +52,9 @@ void enter(struct batch *self);
 
 bool leave(struct batch *self, struct dualMem* dualMem, size_t size, size_t align);
 
-bool read_word(struct dualMem* dualMem, size_t index, size_t source, void* target, size_t align, size_t transactionId);
+bool read_word(struct word* _word, size_t index, size_t source, void* target, size_t align, size_t transactionId);
 
-bool write_word(struct batch* self ,struct dualMem* dualMem, size_t index, void const* source, size_t offset, size_t align, size_t transactionId);
+bool write_word(struct batch* self ,struct word* _word, size_t index, void const* source, size_t offset, size_t align, size_t transactionId);
 
 bool read(struct batch *self, const void* source, size_t size, void* target);
 
