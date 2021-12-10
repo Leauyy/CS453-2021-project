@@ -138,7 +138,6 @@ shared_t tm_create(size_t size, size_t align) {
     //TODO check memory alloc
     //void* memory = (void*) ((uintptr_t)dualMem + sizeof(struct dualMem));
 
-    printf("Finished creationg mem region \n");
     return region;
 }
 
@@ -364,8 +363,7 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
         return abort_alloc;
     }
     if (posix_memalign((void**) &(dualMem->totalAccesses), sizeof(atomic_size_t), size) != 0) {
-        free(region);
-        return invalid_shared;
+        return abort_alloc;
     }
 
     size_t thisPointer = atomic_fetch_add(&reg->nextSegment,1);

@@ -153,7 +153,6 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
     //accesed word index
     size_t varIdx = offset/align + index;
 
-
     bool is_ro = (transactionId % 2) == 0;
     if (is_ro){
         if(toPrint) {
@@ -165,10 +164,21 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
         // Acquire lock for writing to this word
 
         // has been written in current epoch
+        size_t expected = 0;
+        if(!atomic_compare_exchange_strong(dualMem->accessed + varIdx, &expected, transactionId)) {
+            size_t acc = atomic_load(dualMem->accessed + varIdx);
+        } else {
+            //First to access
+            atomic_fetch_add(dualMem->totalAccesses + varIdx, 1);
+        }
+
+        size_t acc = atomic_load(dualMem->accessed + varIdx);
         size_t writtenBy = atomic_load(dualMem->wasWritten + varIdx);
+        if (acc != transactionId && writtenBy==0) {
+            atomic_fetch_add(dualMem->totalAccesses + varIdx, 1);
+        }
 
         if (writtenBy>0) {
-            size_t acc = atomic_load(dualMem->accessed + varIdx);
             if (acc == transactionId) { //in access set
                 //read
                 memcpy(target + writeOffset, dualMem->writeCopy + offset + writeOffset, align);
@@ -180,12 +190,6 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
                 return false;
             }
         } else {
-            size_t expected = 0;
-            accessSet
-            if(!atomic_compare_exchange_strong(dualMem->accessed + varIdx, &expected, transactionId)) {
-                printf("New Abort...\n");
-                return false;
-            }
             memcpy(target + writeOffset, dualMem->validCopy + offset + writeOffset, align);
             return true;
         }
@@ -234,11 +238,14 @@ bool write_word(struct batch* self, struct dualMem* dualMem, size_t index, void 
             printf("NO word was written in this epoch\n");
         }
         size_t expected = 0;
+        // If we got an access to this object show that we are first to access
+        if (atomic_compare_exchange_strong(dualMem->accessed + varIdx, &expected, transactionId)){
+            atomic_fetch_add(dualMem->totalAccesses+varIdx,1);
+        }
         size_t totalAcc = atomic_load(dualMem->totalAccesses + varIdx);
-        atomic_compare_exchange_strong(dualMem->accessed + varIdx, &expected, transactionId);
         size_t acc = atomic_load(dualMem->accessed + varIdx);
 
-        if (acc != transactionId) {
+        if (totalAcc>1 || acc != transactionId) {
             if (printAborts) {
                 printf("ABORT: WRITE word was accessed before by: %lu, us: %lu, epoch = %lu\n", acc, transactionId,
                        get_epoch(self));
