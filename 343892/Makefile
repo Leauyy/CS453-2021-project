@@ -17,9 +17,9 @@ SRCS_CXX := $(call WILD_EXT,EXT_CXX,$(SOURCE_DIR))
 OBJS     := $(SRCS_C:%=%.o) $(SRCS_CXX:%=%.o)
 
 CC       := $(CC)
-CCFLAGS  := -Wall -Wextra -Wfatal-errors -O2 -std=c11 -fPIC -I$(INCLUDE_DIR) -ggdb
+CCFLAGS  := -Wall -Wextra -Wfatal-errors -O0 -std=c11 -fPIC -I$(INCLUDE_DIR) -ggdb
 CXX      := $(CXX)
-CXXFLAGS := -Wall -Wextra -Wfatal-errors -O2 -std=c++17 -fPIC -I$(INCLUDE_DIR) -ggdb
+CXXFLAGS := -Wall -Wextra -Wfatal-errors -O0 -std=c++17 -fPIC -I$(INCLUDE_DIR) -ggdb
 LD       := $(if $(SRCS_CXX),$(CXX),$(CC))
 LDFLAGS  := -shared
 LDLIBS   :=
