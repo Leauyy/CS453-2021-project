@@ -42,7 +42,7 @@ struct dualMem {
     void* validCopy;
     void* writeCopy;
 
-    pthread_mutex_t* wordLock;
+    atomic_size_t belongsTo;
 };
 
 struct batch* init(size_t threadCount);

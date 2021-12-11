@@ -104,6 +104,7 @@ shared_t tm_create(size_t size, size_t align) {
 
     dualMem->size = size;
     dualMem->align = align;
+    atomic_store(&dualMem->belongsTo, 0);
 
     //printf("Init value of accessed: %d", *(&(dualMem->accessed) + 1*sizeof(atomic_size_t)));
 
@@ -157,7 +158,6 @@ void tm_destroy(shared_t unused(shared)) {
         free(dm->validCopy);
         free(dm->writeCopy);
         free(dm->accessed);
-        free(dm->wordLock);
         free(dm);
         dm = dm->NEXT;
     }
@@ -342,7 +342,7 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
  * @param target Pointer in private memory receiving the address of the first byte of the newly allocated, aligned segment
  * @return Whether the whole transaction can continue (success/nomem), or not (abort_alloc)
 **/
-alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
+alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
     // TODO: tm_alloc(shared_t, tx_t, size_t, void**)
     if (print) {
         printf("Allocate memory for a transaction...\n");
@@ -374,6 +374,7 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
     memset(dualMem->wasWritten, 0, size);
     dualMem->align = align;
     dualMem->size = size;
+    atomic_store(&dualMem->belongsTo, tx);
 
     if (print) {
         printf("Allocating memory region \n");
@@ -383,14 +384,6 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
     }
     if (posix_memalign(&(dualMem->writeCopy), align, size) != 0) {
         return abort_alloc;
-    }
-
-    dualMem->wordLock = (pthread_mutex_t*) malloc(words * sizeof(pthread_mutex_t));
-    for (size_t i=0; i< words; i++) {
-        if (pthread_mutex_init(&(dualMem->wordLock[i]), NULL) != 0){
-            printf("failed to create lock %lu\n", i);
-            return abort_alloc;
-        }
     }
 
     memset(dualMem->validCopy, 0, size);

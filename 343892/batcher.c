@@ -1,7 +1,6 @@
 //
 // Created by Liudvikas Lazauskas on 26.11.21.
 //
-//TODO FIX WRITE AND READ OFFSETS FROM TARGET!!!!!
 #include "batcher.h"
 bool toPrint = false;
 bool printThreads = false;
@@ -134,7 +133,6 @@ bool commit(struct batch* self, struct dualMem** dualMem ,size_t size, size_t al
             free(thisMem->validCopy);
             free(thisMem->writeCopy);
             free(thisMem->accessed);
-            free(thisMem->wordLock);
             free(thisMem);
         } else {
             dm = dm->NEXT;
@@ -146,6 +144,11 @@ bool commit(struct batch* self, struct dualMem** dualMem ,size_t size, size_t al
 
 bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* target, size_t align, size_t transactionId) {
     //if read only
+    size_t belongs = atomic_load(&dualMem->belongsTo);
+    if (belongs != 0 && belongs != transactionId) {
+        printf("Abort new region. Belongs to %lu, Us %lu\n", belongs, transactionId);
+        return false;
+    }
     if(toPrint) {
         printf("Reading word \n");
     }
@@ -164,21 +167,10 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
         // Acquire lock for writing to this word
 
         // has been written in current epoch
-        size_t expected = 0;
-        if(!atomic_compare_exchange_strong(dualMem->accessed + varIdx, &expected, transactionId)) {
-            size_t acc = atomic_load(dualMem->accessed + varIdx);
-        } else {
-            //First to access
-            atomic_fetch_add(dualMem->totalAccesses + varIdx, 1);
-        }
-
-        size_t acc = atomic_load(dualMem->accessed + varIdx);
         size_t writtenBy = atomic_load(dualMem->wasWritten + varIdx);
-        if (acc != transactionId && writtenBy==0) {
-            atomic_fetch_add(dualMem->totalAccesses + varIdx, 1);
-        }
 
         if (writtenBy>0) {
+            size_t acc = atomic_load(dualMem->accessed + varIdx);
             if (acc == transactionId) { //in access set
                 //read
                 memcpy(target + writeOffset, dualMem->writeCopy + offset + writeOffset, align);
@@ -190,6 +182,16 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
                 return false;
             }
         } else {
+            size_t expected = 0;
+            if(!atomic_compare_exchange_strong(dualMem->accessed + varIdx, &expected, transactionId)) {
+                size_t acc = atomic_load(dualMem->accessed + varIdx);
+                if (acc != transactionId) {
+                    atomic_fetch_add(dualMem->totalAccesses + varIdx, 1);
+                }
+            } else {
+                //First to access
+                atomic_fetch_add(dualMem->totalAccesses + varIdx, 1);
+            }
             memcpy(target + writeOffset, dualMem->validCopy + offset + writeOffset, align);
             return true;
         }
@@ -197,10 +199,15 @@ bool read_word(struct dualMem* dualMem, size_t index, size_t offset, void* targe
     }
 }
 bool write_word(struct batch* self, struct dualMem* dualMem, size_t index, void const* source, size_t offset, size_t align, size_t transactionId) {
+    size_t belongs = atomic_load(&dualMem->belongsTo);
+    if (belongs != 0 && belongs != transactionId) {
+        printf("Abort new region. Belongs to %lu, Us %lu\n", belongs, transactionId);
+        return false;
+    }
+
     if (toPrint) {
         printf("Writing word for transaction, with index %d\n", index);
     }
-
     size_t writeOffset = index*align;
     //accesed word index
     size_t varIdx = offset/align + index;
@@ -220,7 +227,6 @@ bool write_word(struct batch* self, struct dualMem* dualMem, size_t index, void 
             if (toPrint) {
                 printf("Transaction writing %lu\n", transactionId);
             }
-            //TODO check if write to correct result
             memcpy(dualMem->writeCopy + offset + writeOffset, source + writeOffset, align);
             return true;
         } else {
@@ -269,7 +275,6 @@ void cleanup_read(struct batch* self, struct dualMem** dualMem,void* target, con
     if (leave(self)) {
         commit(self, dualMem, size, align);
         cleanup(self, *dualMem, size, align);
-        //TODO commit
     }
 }
 
@@ -291,6 +296,7 @@ void cleanup(struct batch* self, struct dualMem* dualMem, size_t size, size_t al
         memset(dm->accessed, 0, dm->size);
         memset(dm->wasWritten, 0, dm->size);
         memset(dm->totalAccesses, 0, dm->size);
+        atomic_store(&dm->belongsTo, 0);
         dm = dm->NEXT;
     } while(dm != NULL);
     //printf("Broadcasting awake \n");
