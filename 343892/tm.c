@@ -65,7 +65,7 @@ shared_t tm_create(size_t size, size_t align) {
     region->align       = align;
     region->batcher = init(1024);
 
-    //size_t words = size/align;
+    size_t words = size/align;
 
     //allocate first segment STM
     struct dualMem* dualMem= (struct dualMem*) malloc(sizeof(struct dualMem));
@@ -89,6 +89,8 @@ shared_t tm_create(size_t size, size_t align) {
         return invalid_shared;
     }
 
+    dualMem->spinLock = (atomic_bool*) malloc(sizeof(atomic_bool)*words);
+
     atomic_store(&region->nextSegment,2);
     size_t thisPointer = 1;
     thisPointer = thisPointer<<49;
@@ -100,6 +102,7 @@ shared_t tm_create(size_t size, size_t align) {
     memset(dualMem->accessed, 0, size);
     memset(dualMem->wasWritten, 0, size);
     memset(dualMem->totalAccesses, 0, size);
+    memset(dualMem->spinLock, 0, words*sizeof(atomic_bool));
     atomic_store(&dualMem->remove, 0);
 
     dualMem->size = size;
@@ -148,22 +151,26 @@ void tm_destroy(shared_t unused(shared)) {
     // TODO: tm_destroy(shared_t)
     // TODO: clear threads
     struct region* reg = (struct region*) shared;
-    if (print) {
+    if (true) {
         printf("Destroy called..., total transactions = %lu\n", (reg->nextROSlot+reg->nextRWSlot)/2);
     }
     struct dualMem* dm = reg->allocs;
 
     while (dm != NULL) {
-        free(dm->validCopy);
-        free(dm->writeCopy);
-        free(dm->accessed);
-        free(dm->wordLock);
-        free(dm);
+        struct dualMem* thisMem = dm;
         dm = dm->NEXT;
+
+        free(thisMem->validCopy);
+        free(thisMem->writeCopy);
+        free(thisMem->accessed);
+        free(thisMem->totalAccesses);
+        free(thisMem->spinLock);
+        free(thisMem);
     }
     free(reg->memoryRegions);
-    free(reg);
+    free(reg->batcher->finishedTransactions);
     free(reg->batcher);
+    free(reg);
 }
 
 /** [thread-safe] Return the start address of the first allocated segment in the shared memory region.
@@ -171,9 +178,8 @@ void tm_destroy(shared_t unused(shared)) {
  * @return Start address of the first allocated segment
 **/
 void* tm_start(shared_t shared) {
-    // TODO: tm_start(shared_t)
     struct region* reg = (struct region*) shared;
-
+    printf("Start Called. Returning %lu\n", reg->start);
     return reg->start;
 }
 
@@ -238,13 +244,14 @@ bool tm_end(shared_t shared, tx_t tx) {
 
         size_t index = atomic_fetch_add(&reg->batcher->finishedCounter, 1);
         reg->batcher->finishedTransactions[index] = tx;
-        commit(reg->batcher, &reg->allocs, reg->size, reg->align);
-        cleanup(reg->batcher, reg->allocs, reg->size, reg->align);
+        commit(reg->batcher, &reg->allocs);
+        cleanup(reg->batcher, reg->allocs);
     } else {
         // Sleep
         size_t index = atomic_fetch_add(&reg->batcher->finishedCounter, 1);
         reg->batcher->finishedTransactions[index] = tx;
     }
+    //printf("Finished transaction %lu \n", tx);
     return true;
 }
 
@@ -285,7 +292,7 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         size_t idx = i*align;
         res = read_word(dualMem, idx, offset, target, align, tx);
         if (!res) {
-            cleanup_read(reg->batcher, &reg->allocs, target, source,size,idx-align,align);
+            cleanup_read(reg->batcher, &reg->allocs);
             //printf("Failed read transaction ... \n");
             return false;
         }
@@ -327,7 +334,7 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
                 printf("Failed finishing writing a word from the transaction on thread = %ld, loop = %ld...\n", tx, i);
             }
             //pass all alocs to cleanup from start
-            cleanup_write(reg->batcher, &reg->allocs, target, source, reg->size, i, align);
+            cleanup_write(reg->batcher, &reg->allocs);
             return false;
         }
     }
@@ -384,18 +391,12 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
     if (posix_memalign(&(dualMem->writeCopy), align, size) != 0) {
         return abort_alloc;
     }
-
-    dualMem->wordLock = (pthread_mutex_t*) malloc(words * sizeof(pthread_mutex_t));
-    for (size_t i=0; i< words; i++) {
-        if (pthread_mutex_init(&(dualMem->wordLock[i]), NULL) != 0){
-            printf("failed to create lock %lu\n", i);
-            return abort_alloc;
-        }
-    }
+    dualMem->spinLock = (atomic_bool*) malloc(sizeof(atomic_bool)*words);
 
     memset(dualMem->validCopy, 0, size);
     memset(dualMem->writeCopy, 0, size);
     memset(dualMem->totalAccesses, 0, size);
+    memset(dualMem->spinLock, 0, words*sizeof(atomic_bool));
     atomic_store(&dualMem->remove, 0);
 
     dualMem->PREV = NULL;
@@ -430,15 +431,5 @@ bool tm_free(shared_t shared, tx_t tx, void* target) {
     struct dualMem* dualMem = (struct dualMem*) reg->memoryRegions[segment];
     atomic_store(&dualMem->remove, tx);
 
-    // Remove from the linked list
-//    if (dualMem->PREV) dualMem->PREV->NEXT = dualMem->NEXT;
-//    else ((struct region*) shared)->allocs = dualMem->NEXT;
-//    if (dualMem->NEXT) dualMem->NEXT->PREV = dualMem->PREV;
-//
-//    free(dualMem->validCopy);
-//    free(dualMem->writeCopy);
-//    free(dualMem->accessed);
-//    free(dualMem->wordLock);
-//    free(dualMem);
     return true;
 }

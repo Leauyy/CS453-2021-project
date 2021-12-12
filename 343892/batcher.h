@@ -38,11 +38,12 @@ struct dualMem {
     atomic_size_t* accessed;
     atomic_size_t* totalAccesses;
     atomic_size_t* wasWritten;
+    atomic_size_t belongsTo;
+
+    atomic_bool* spinLock;
 
     void* validCopy;
     void* writeCopy;
-
-    pthread_mutex_t* wordLock;
 };
 
 struct batch* init(size_t threadCount);
@@ -65,8 +66,10 @@ shared_t alloc(struct batch *self, size_t size, void* target);
 
 //bool free(struct batch *self, void* target);
 
-bool commit(struct batch *self, struct dualMem** dualMem, size_t size, size_t align);
-void cleanup_read(struct batch* self, struct dualMem** dualMem,void* target, const void* source, size_t size, size_t reachedIndex, size_t align);
-void cleanup_write(struct batch* self, struct dualMem** dualMem,void* target, const void* source, size_t size, size_t reachedIndex, size_t align);
-void cleanup(struct batch* self, struct dualMem* dualMem, size_t size, size_t align);
+bool commit(struct batch *self, struct dualMem** dualMem);
+void cleanup_read(struct batch* self, struct dualMem** dualMem);
+void cleanup_write(struct batch* self, struct dualMem** dualMem);
+void cleanup(struct batch* self, struct dualMem* dualMem);
 
+void spin_lock(atomic_bool* lock);
+void spin_unlock(atomic_bool* lock);
