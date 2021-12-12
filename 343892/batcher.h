@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <signal.h>
+//#include <signal.h>
 
 //TODO change to atomic
 
@@ -39,11 +39,10 @@ struct dualMem {
     atomic_size_t* totalAccesses;
     atomic_size_t* wasWritten;
     atomic_size_t belongsTo;
-
     atomic_bool* spinLock;
 
-    void* validCopy;
     void* writeCopy;
+    void* validCopy;
 };
 
 struct batch* init(size_t threadCount);
@@ -63,8 +62,6 @@ bool read(struct batch *self, const void* source, size_t size, void* target);
 bool write(struct batch *self, const void* source, size_t size, void* target);
 
 shared_t alloc(struct batch *self, size_t size, void* target);
-
-//bool free(struct batch *self, void* target);
 
 bool commit(struct batch *self, struct dualMem** dualMem);
 void cleanup_read(struct batch* self, struct dualMem** dualMem);
