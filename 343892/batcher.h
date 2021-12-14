@@ -12,6 +12,9 @@
 
 //TODO change to atomic
 
+// #define printdebug(x)
+#define printdebug(x) printf x
+
 
 
 struct batch{
@@ -27,6 +30,7 @@ struct batch{
 
 
 struct dualMem {
+    struct lock_t* word_lock;
     atomic_size_t hasCommits;
     atomic_size_t remove;
     size_t size;
@@ -38,11 +42,26 @@ struct dualMem {
     atomic_size_t* accessed;
     atomic_size_t* totalAccesses;
     atomic_size_t* wasWritten;
+    atomic_size_t* writeEpoch;
     atomic_size_t belongsTo;
     atomic_bool* spinLock;
 
     void* writeCopy;
     void* validCopy;
+};
+
+struct region{
+    void* start;
+    size_t size;
+    size_t align;
+    struct dualMem* allocs;
+    struct batch* batcher;
+    struct dualMem dualMem;
+    struct dualMem** memoryRegions;
+
+    atomic_size_t nextROSlot;
+    atomic_size_t nextRWSlot;
+    atomic_short nextSegment;
 };
 
 struct batch* init(size_t threadCount);
@@ -53,9 +72,9 @@ void enter(struct batch *self);
 
 bool leave(struct batch *self);
 
-bool read_word(struct dualMem* dualMem, size_t index, size_t source, void* target, size_t align, size_t transactionId);
+bool read_word(struct dualMem* dualMem, size_t index, void* target, size_t offset, size_t transactionId);
 
-bool write_word(struct batch* self ,struct dualMem* dualMem, size_t index, void const* source, size_t offset, size_t align, size_t transactionId);
+bool write_word(struct dualMem* dualMem, size_t index, void const* source, size_t offset,  size_t transactionId);
 
 bool read(struct batch *self, const void* source, size_t size, void* target);
 
@@ -64,9 +83,9 @@ bool write(struct batch *self, const void* source, size_t size, void* target);
 shared_t alloc(struct batch *self, size_t size, void* target);
 
 bool commit(struct batch *self, struct dualMem** dualMem);
-void cleanup_read(struct batch* self, struct dualMem** dualMem);
-void cleanup_write(struct batch* self, struct dualMem** dualMem);
-void cleanup(struct batch* self, struct dualMem* dualMem);
+void cleanup_read(struct region* region, struct batch* self, struct dualMem** dualMem);
+void cleanup_write(struct region* region, struct batch* self, struct dualMem** dualMem);
+void cleanup(struct region* region, struct batch* self, struct dualMem* dualMem);
 
 void spin_lock(atomic_bool* lock);
 void spin_unlock(atomic_bool* lock);
