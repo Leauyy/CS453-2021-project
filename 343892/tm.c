@@ -29,7 +29,6 @@
 #include "macros.h"
 #include "batcher.h"
 
-bool print = false;
 
 
 /** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
@@ -62,7 +61,7 @@ shared_t tm_create(size_t size, size_t align) {
     size_t maxRegions = 1<<16;
     region->memoryRegions = (struct dualMem**) malloc(maxRegions*sizeof(struct dualMem*));
 
-    dualMem->spinLock = (atomic_bool*) malloc(sizeof(atomic_bool)*words);
+    //dualMem->spinLock = (atomic_bool*) malloc(sizeof(atomic_bool)*words);
 
     atomic_store(&region->nextSegment,2);
     uintptr_t thisPointer = 1;
@@ -74,7 +73,7 @@ shared_t tm_create(size_t size, size_t align) {
     memset(dualMem->accessed, 0, size);
     memset(dualMem->wasWritten, 0, size);
     memset(dualMem->totalAccesses, 0, size);
-    memset(dualMem->spinLock, 0, words*sizeof(atomic_bool));
+    //memset(dualMem->spinLock, 0, words*sizeof(atomic_bool));
     atomic_store(&dualMem->remove, 0);
     dualMem->word_lock = (struct lock_t*) malloc(sizeof(struct lock_t)*words);
 
@@ -115,11 +114,18 @@ void tm_destroy(shared_t unused(shared)) {
         struct dualMem* thisMem = dm;
         dm = dm->NEXT;
 
+        size_t words = thisMem->size/thisMem->align;
         free(thisMem->validCopy);
         free(thisMem->writeCopy);
         free(thisMem->accessed);
+        free(thisMem->wasWritten);
         free(thisMem->totalAccesses);
-        free(thisMem->spinLock);
+        for (size_t i=0ul; i < words; i++){
+            lock_cleanup(thisMem->word_lock+i);
+        }
+        free(thisMem->word_lock);
+
+        //free(thisMem->spinLock);
         free(thisMem);
     }
     free(reg->memoryRegions);
@@ -182,12 +188,15 @@ bool tm_end(shared_t shared, tx_t tx) {
     if (leave(reg->batcher)) {
         size_t index = atomic_fetch_add(&reg->batcher->finishedCounter, 1);
         reg->batcher->finishedTransactions[index] = tx;
+//        if (global_printer) {
+//            printf("Comitting on epoch %lu\n", get_epoch(reg->batcher));
+//        }
         commit(reg->batcher, &reg->allocs);
         cleanup(reg ,reg->batcher, reg->allocs);
-        lock_wake_up(&(reg->batcher->lock));
     } else {
         size_t index = atomic_fetch_add(&reg->batcher->finishedCounter, 1);
         reg->batcher->finishedTransactions[index] = tx;
+        lock_release(&(reg->batcher->lock));
     }
     return true;
 }
@@ -222,8 +231,11 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
             return false;
         }
     }
-    //size_t *content = target;
-    //printf("READ %lu words on epoch %lu || Segment: %lu Word Offset: %lu Word Align %lu Word Index %lu || Content: %lu || Transaction %lu\n", numberOfWords, get_epoch(reg->batcher), segment, offset, dualMem->align, offset/dualMem->align, *content, tx);
+//    if (global_printer) {
+//        size_t *content = target;
+//        //printf("READ %lu words on epoch %lu || Segment: %lu Word Offset: %lu Word Align %lu Word Index %lu || Content: %lu || Transaction %lu\n", numberOfWords, get_epoch(reg->batcher), segment, offset, dualMem->align, offset/dualMem->align, *content, tx);
+//        //printf("READ: Content: %lu Transaction %lu || Epoch %lu\n", *content, tx, get_epoch(reg->batcher));
+//    }
     return true;
 }
 
@@ -236,31 +248,41 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
  * @return Whether the whole transaction can continue
 **/
 bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
-    struct region* reg = (struct region*) shared;
+    struct region *reg = (struct region *) shared;
     size_t align = reg->align;
-    size_t numberOfWords = size/align;
+    size_t numberOfWords = size / align;
 
     //Get offset and segment. Then obtain memory region
-    size_t segment = ((uintptr_t)target)>>48;
-    size_t offset = ((uintptr_t)target) & ((1ul<<48)-1);
-    struct dualMem* dualMem = (struct dualMem*) reg->memoryRegions[segment];
+    size_t segment = ((uintptr_t) target) >> 48;
+    size_t offset = ((uintptr_t) target) & ((1ul << 48) - 1);
+    struct dualMem *dualMem = (struct dualMem *) reg->memoryRegions[segment];
 
 
     bool res;
-    for (size_t i=0; i < numberOfWords; i++) {
+    for (size_t i = 0; i < numberOfWords; i++) {
         res = write_word(dualMem, i, source, offset, tx);
         if (!res) {
             //pass all alocs to cleanup from start
             //printf("Write abort\n");
-            cleanup_write(reg ,reg->batcher, &reg->allocs);
+            cleanup_write(reg, reg->batcher, &reg->allocs);
             lock_wake_up(&(reg->batcher->lock));
             return false;
         }
     }
 
-    size_t *content = source;
-    size_t *actual = (dualMem->writeCopy+offset);
-    printf("WRITE %lu words on epoch %lu || Segment: %lu Word Offset: %lu Word Align %lu Word Index %lu || Content: %lu Actual: %lu || Transaction %lu\n", numberOfWords, get_epoch(reg->batcher), segment, offset, dualMem->align, offset/dualMem->align, *content, *actual,tx);
+//    size_t *content = source;
+//
+//    if (*content ==800) {
+//        atomic_store(&global_printer, true);
+//    }
+//    size_t *actual = (dualMem->writeCopy + offset);
+//    if (global_printer) {
+//        printf("WRITE %lu words on epoch %lu || Segment: %lu Word Offset: %lu Word Align %lu Word Index %lu || Content: %lu Actual: %lu || Transaction %lu\n",
+//               numberOfWords, get_epoch(reg->batcher), segment, offset, dualMem->align, offset / dualMem->align,
+//               *content,
+//               *actual, tx);
+//        printf("WRITE: Content: %lu Transaction %lu || Epoch %lu\n", *content, tx, get_epoch(reg->batcher));
+//    }
     return true;
 }
 
@@ -281,13 +303,15 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
     size_t words = size/align;
 
     struct dualMem* dualMem= (struct dualMem*) malloc(sizeof(struct dualMem));
+    //use one malloc
     dualMem->validCopy = (void*) malloc(size);
     dualMem->writeCopy = (void*) malloc(size);
+
 
     dualMem->accessed = (atomic_size_t*) malloc(words * sizeof(atomic_size_t));
     dualMem->wasWritten = (atomic_size_t*) malloc(words * sizeof(atomic_size_t));
     dualMem->totalAccesses = (atomic_size_t*) malloc(words * sizeof(atomic_size_t));
-    dualMem->spinLock = (atomic_bool*) malloc(sizeof(atomic_bool)*words);
+    //dualMem->spinLock = (atomic_bool*) malloc(sizeof(atomic_bool)*words);
     dualMem->word_lock = (struct lock_t*) malloc(sizeof(struct lock_t)*words);
 
     size_t thisPointer = atomic_fetch_add(&reg->nextSegment,1);
@@ -302,7 +326,7 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
     memset(dualMem->validCopy, 0, size);
     memset(dualMem->writeCopy, 0, size);
     memset(dualMem->totalAccesses, 0, size);
-    memset(dualMem->spinLock, 0, words*sizeof(atomic_bool));
+    //memset(dualMem->spinLock, 0, words*sizeof(atomic_bool));
     atomic_store(&dualMem->remove, 0);
     for (size_t i=0ul; i < words; i++){
         lock_init(dualMem->word_lock+i);

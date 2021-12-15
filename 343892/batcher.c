@@ -45,7 +45,9 @@ void enter(struct batch *self) {
         //Edge case, thread enters after leave
         size_t epoch = get_epoch(self);
         atomic_fetch_add(&self->last, 1);
-        lock_wait(&(self->lock));
+        while (epoch>= get_epoch(self)){
+            lock_wait(&(self->lock));
+        }
         lock_release(&(self->lock));
     }
 
@@ -64,7 +66,6 @@ bool leave(struct batch *self) {
         return true;
     } else {
         atomic_fetch_sub(&self->remaining, 1);
-        lock_release(&(self->lock));
         return false;
     }
 
@@ -73,7 +74,7 @@ bool leave(struct batch *self) {
 bool commit(struct batch* self, struct dualMem** dualMem) {
     size_t words;
     uintptr_t varIdx;
-    size_t epoch = get_epoch(self)-1;
+    //size_t epoch = get_epoch(self)-1;
 
     //Pass first dual mem in linked list
     struct dualMem* dm = *dualMem;
@@ -85,21 +86,20 @@ bool commit(struct batch* self, struct dualMem** dualMem) {
         words = dm->size/dm->align;
         size_t rem = atomic_load(&dm->remove);
         bool found = false;
-        for (size_t i = 0; i <= words; i++) {
+        for (size_t i = 0; i < words; i++) {
             varIdx = i * dm->align;
-            spin_lock(dm->spinLock+i);
+            //spin_lock(dm->spinLock+i);
             for (size_t j = 0; j < elements; j++) {
                 if (self->finishedTransactions[j]==rem) {
                     found = true;
                 }
                 written_by = atomic_load(dm->wasWritten + i);
                 if (written_by == self->finishedTransactions[j] && written_by!=0) {
-                    printf("Comitting Transaction: %lu || Word index %lu || On Epoch %lu\n", written_by, i, epoch);
                     memcpy(dm->validCopy + varIdx, dm->writeCopy + varIdx, dm->align);
                     break;
                 }
             }
-            spin_unlock(dm->spinLock+i);
+            //spin_unlock(dm->spinLock+i);
         }
         if (rem>0 && found){
             struct dualMem* thisMem = dm;
@@ -108,11 +108,17 @@ bool commit(struct batch* self, struct dualMem** dualMem) {
             if (dm->NEXT) dm->NEXT->PREV = dm->PREV;
             dm = dm->NEXT;
 
+            //free(thisMem->spinLock);
+
             free(thisMem->validCopy);
             free(thisMem->writeCopy);
             free(thisMem->accessed);
+            free(thisMem->wasWritten);
             free(thisMem->totalAccesses);
-            free(thisMem->spinLock);
+            for (size_t i=0ul; i < words; i++){
+                lock_cleanup(thisMem->word_lock+i);
+            }
+            free(thisMem->word_lock);
             free(thisMem);
         } else {
             memset(dm->writeCopy, 0, dm->size);
@@ -126,7 +132,7 @@ bool commit(struct batch* self, struct dualMem** dualMem) {
 bool read_word(struct dualMem* dualMem, size_t index, void* target, size_t offset, size_t transactionId) {
 
     size_t varIdx = offset/dualMem->align + index;
-    lock_acquire(dualMem->word_lock+varIdx);
+    //lock_acquire(dualMem->word_lock+varIdx);
 
 
     uintptr_t writeOffset = index*dualMem->align;
@@ -169,14 +175,14 @@ bool read_word(struct dualMem* dualMem, size_t index, void* target, size_t offse
         }
         //Release lock for this word
     }
-    lock_release(dualMem->word_lock+varIdx);
+    //lock_release(dualMem->word_lock+varIdx);
     return result;
 }
 bool write_word(struct dualMem* dualMem, size_t index, void const* source, size_t offset,  size_t transactionId) {
     size_t writeOffset = index*dualMem->size;
     //accesed word index
     size_t varIdx = offset/dualMem->align + index;
-    lock_acquire(dualMem->word_lock+varIdx);
+    //lock_acquire(dualMem->word_lock+varIdx);
     bool result = false;
 
 
@@ -193,8 +199,7 @@ bool write_word(struct dualMem* dualMem, size_t index, void const* source, size_
 
         // If we got an access to this object show that we are first to access
         size_t totalAcc = atomic_load(dualMem->totalAccesses + varIdx);
-
-        if (totalAcc>1) {
+        if (totalAcc > 1) {
             result = false;
         } else {
             size_t expected = 0;
@@ -210,7 +215,7 @@ bool write_word(struct dualMem* dualMem, size_t index, void const* source, size_
             result = true;
         }
     }
-    lock_release(dualMem->word_lock+varIdx);
+    //lock_release(dualMem->word_lock+varIdx);
     return result;
 }
 
@@ -218,6 +223,8 @@ void cleanup_read(struct region* region, struct batch* self, struct dualMem** du
     if (leave(self)) {
         commit(self, dualMem);
         cleanup(region ,self, *dualMem);
+    } else {
+        lock_release(&(self->lock));
     }
 }
 
@@ -225,6 +232,8 @@ void cleanup_write(struct region* region, struct batch* self, struct dualMem** d
     if (leave(self)) {
         commit(self, dualMem);
         cleanup(region, self, *dualMem);
+    } else {
+        lock_release(&(self->lock));
     }
 }
 
@@ -242,7 +251,7 @@ void cleanup(struct region* region, struct batch* self, struct dualMem* dualMem)
     atomic_store(&region->nextRWSlot, 1);
     atomic_store(&region->nextROSlot, 2);
 
-
+    lock_wake_up(&(self->lock));
     lock_release(&(self->lock));
     //new condition for new epoch
 

@@ -5,7 +5,7 @@
 #include <tm.h>
 #include <pthread.h>
 #include <stdatomic.h>
-#include <stdio.h>
+//#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 //#include <signal.h>
@@ -13,8 +13,7 @@
 //TODO change to atomic
 
 // #define printdebug(x)
-#define printdebug(x) printf x
-
+//#define printdebug(x) printf x
 
 
 struct batch{
@@ -62,6 +61,7 @@ struct region{
     atomic_size_t nextROSlot;
     atomic_size_t nextRWSlot;
     atomic_short nextSegment;
+    atomic_bool printer;
 };
 
 struct batch* init(size_t threadCount);
